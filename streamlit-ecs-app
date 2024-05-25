@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+
+import os
+import click
+
+@click.group()
+def cli():
+    """A CLI tool to scaffold Streamlit ECS applications."""
+    pass
+
+@cli.command()
+@click.option('--name', default='streamlit-ecs-app', help='The name of the project.')
+@click.option('--language', default='python', help='The programming language of the project.')
+def create(name, language):
+    """Create the project structure and configuration files for a Streamlit ECS application."""
+    if language != 'python':
+        click.echo("Only Python language projects are supported.")
+        return
+    base_path = name
+    os.makedirs(f'{base_path}/notebooks', exist_ok=True)
+    os.makedirs(f'{base_path}/datasets', exist_ok=True)
+    os.makedirs(f'{base_path}/models', exist_ok=True)
+
+    # Dockerfile
+    dockerfile_content = """\
+# This sets up the container with Python 3.10 installed.
+FROM python:3.10-slim
+COPY . /app
+WORKDIR /app
+RUN pip install -r requirements.txt
+EXPOSE 80
+RUN mkdir ~/.streamlit
+RUN cp config.toml ~/.streamlit/config.toml
+RUN cp credentials.toml ~/.streamlit/credentials.toml
+ENTRYPOINT ["streamlit", "run"]
+CMD ["app.py"]
+    """
+    with open(f'{base_path}/Dockerfile', 'w') as f:
+        f.write(dockerfile_content)
+
+    # buildspec.yaml
+    buildspec_content = """\
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws --version
+      - echo $REGION $AWS_ACCOUNT_ID $IMAGE_REPO_NAME:$IMAGE_TAG
+      - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+  build:
+    commands:
+      - echo Building the Docker image...
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo Pushing the Docker image...
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo Container image to be used $REPOSITORY_URI:$IMAGE_TAG
+      - sed -i "s|REPOSITORY_URI|${REPOSITORY_URI}|g" taskdef.json
+      - sed -i "s|IMAGE_TAG|${IMAGE_TAG}|g" taskdef.json
+      - sed -i "s|TASK_ROLE_ARN|${TASK_ROLE_ARN}|g" taskdef.json
+      - sed -i "s|EXECUTION_ROLE_ARN|${EXECUTION_ROLE_ARN}|g" taskdef.json
+      - sed -i "s|TASK_DEFINITION_ARN|${TASK_DEFINITION_ARN}|g" appspec.yaml
+      - cat appspec.yaml && cat taskdef.json
+artifacts:
+  files:
+    - "appspec.yaml"
+    - "taskdef.json"
+    """
+    with open(f'{base_path}/buildspec.yaml', 'w') as f:
+        f.write(buildspec_content)
+
+    # appspec.yaml
+    appspec_content = """\
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: "TASK_DEFINITION_ARN"
+        LoadBalancerInfo:
+          ContainerName: "myweb"
+          ContainerPort: "80"
+    """
+    with open(f'{base_path}/appspec.yaml', 'w') as f:
+        f.write(appspec_content)
+
+    # config.toml
+    config_content = """\
+[global]
+showWarningOnDirectExecution = true
+
+[logger]
+level = "debug"
+
+[runner]
+magicEnabled = true
+
+[server]
+folderWatchBlacklist = []
+headless = true
+liveSave = false
+runOnSave = false
+port = 80
+enableCORS = false
+
+[browser]
+serverAddress = "0.0.0.0"
+gatherUsageStats = true
+serverPort = 80
+    """
+    with open(f'{base_path}/config.toml', 'w') as f:
+        f.write(config_content)
+
+    # credentials.toml
+    credentials_content = """\
+[general]
+email = ""
+    """
+    with open(f'{base_path}/credentials.toml', 'w') as f:
+        f.write(credentials_content)
+
+    # taskdef.json
+    taskdef_content = """\
+{
+  "containerDefinitions": [
+    {
+      "name": "myweb",
+      "image": "REPOSITORY_URI:IMAGE_TAG",
+      "portMappings": [
+        {
+          "containerPort": 80,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true
+    }
+  ],
+  "taskRoleArn": "TASK_ROLE_ARN",
+  "executionRoleArn": "EXECUTION_ROLE_ARN",
+  "family": "codedeploy-sample",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512"
+}
+    """
+    with open(f'{base_path}/taskdef.json', 'w') as f:
+        f.write(taskdef_content)
+
+    # Empty or Placeholder files
+    with open(f'{base_path}/README.md', 'w') as f:
+        f.write("# Project README\n")
+    with open(f'{base_path}/app.py', 'w') as f:
+        pass  # Leaving app.py empty as per the specification
+    with open(f'{base_path}/requirements.txt', 'w') as f:
+        pass  # Leaving requirements.txt empty as per the specification
+
+    click.echo(f'Project {name} created successfully.')
+
+if __name__ == '__main__':
+    cli()
+
